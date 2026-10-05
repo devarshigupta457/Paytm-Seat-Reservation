@@ -3,6 +3,7 @@ package com.paytm.seatreservation.service;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.paytm.seatreservation.dto.*;
 import com.paytm.seatreservation.exception.DomainConflictException;
+import com.paytm.seatreservation.exception.ForbiddenException;
 import com.paytm.seatreservation.model.*;
 import com.paytm.seatreservation.repository.*;
 import io.micrometer.core.instrument.Counter;
@@ -44,6 +45,84 @@ public class ReservationService {
         this.seatTakenCounter = registry.counter("reservations.declined", "reason", "seat_taken");
         this.limitExceededCounter = registry.counter("reservations.declined", "reason", "user_limit_exceeded");
         this.idempotencyMismatchCounter = registry.counter("reservations.declined", "reason", "idempotency_mismatch");
+    }
+
+    @Transactional
+    public ReservationResponse cancelReservation(String reservationId, String userId) {
+
+        // 1. Find reservation
+        Reservation reservation = reservationRepository.findById(reservationId)
+                .orElseThrow(() ->
+                        new DomainConflictException(
+                                "Reservation not found: " + reservationId));
+
+        // 2. Only the owner can cancel
+        if (!reservation.getUserId().equals(userId)) {
+            throw new ForbiddenException(
+                    "Only the reservation owner may cancel this reservation");
+        }
+
+        // 3. Reservation must be CONFIRMED
+        if (!"CONFIRMED".equals(reservation.getStatus())) {
+            throw new DomainConflictException(
+                    "Reservation is already " + reservation.getStatus());
+        }
+
+        // 4. Lock all seats belonging to this reservation
+        List<Seat> lockedSeats =
+                seatRepository.findByReservationIdForUpdate(reservationId);
+
+        // 5. Make sure reservation still owns seats
+        if (lockedSeats.isEmpty()) {
+            throw new DomainConflictException(
+                    "No seats are associated with reservation: "
+                            + reservationId);
+        }
+
+        // 6. Safety check
+        for (Seat seat : lockedSeats) {
+
+            if (!reservationId.equals(seat.getReservationId())) {
+                throw new DomainConflictException(
+                        "Seat " + seat.getSeatNumber()
+                                + " is no longer associated with reservation "
+                                + reservationId);
+            }
+
+            if (!"CONFIRMED".equals(seat.getStatus())) {
+                throw new DomainConflictException(
+                        "Seat " + seat.getSeatNumber()
+                                + " is not in CONFIRMED state");
+            }
+        }
+
+        // 7. Release seats
+        List<String> seatNumbers = new ArrayList<>();
+
+        for (Seat seat : lockedSeats) {
+
+            seatNumbers.add(seat.getSeatNumber());
+
+            seat.setStatus("AVAILABLE");
+            seat.setReservationId(null);
+        }
+
+        seatRepository.saveAll(lockedSeats);
+
+        // 8. Mark reservation as CANCELLED
+        reservation.setStatus("CANCELLED");
+
+        reservationRepository.save(reservation);
+
+        // 9. Return response
+        return new ReservationResponse(
+                reservation.getId(),
+                reservation.getShowId(),
+                reservation.getUserId(),
+                seatNumbers,
+                reservation.getAmountPaise(),
+                "cancelled"
+        );
     }
 
     @Transactional
@@ -126,4 +205,5 @@ public class ReservationService {
         confirmedCounter.increment();
         return response;
     }
+
 }

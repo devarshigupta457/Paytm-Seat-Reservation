@@ -52,4 +52,33 @@ public class ShowController {
     public ResponseEntity<ShowStateResponse> getShowState(@PathVariable("id") String showId) {
         return ResponseEntity.ok(showService.getShowState(showId));
     }
+
+    @PostMapping("/{reservationId}/cancel")
+    public ResponseEntity<ReservationResponse> cancelReservation(
+            @PathVariable String reservationId,
+            HttpServletRequest request) {
+
+        String authorizationHeader =
+                request.getHeader("Authorization");
+
+        String userId;
+
+        if (authorizationHeader != null
+                && authorizationHeader.startsWith("Bearer ")) {
+
+            userId = authorizationHeader.substring(7);
+
+        } else {
+
+            userId = "test-user-1";
+        }
+
+        ReservationResponse response =
+                reservationService.cancelReservation(
+                        reservationId,
+                        userId
+                );
+
+        return ResponseEntity.ok(response);
+    }
 }
