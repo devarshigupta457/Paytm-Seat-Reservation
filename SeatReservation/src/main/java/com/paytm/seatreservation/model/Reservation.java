@@ -40,4 +40,8 @@ public class Reservation {
     public String getUserId() { return userId; }
     public Long getAmountPaise() { return amountPaise; }
     public String getStatus() { return status; }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
 }
