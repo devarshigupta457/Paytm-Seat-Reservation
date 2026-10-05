@@ -1,4 +1,4 @@
-package com.paytm.seat.reservation.SeatReservation;
+package com.paytm.seatreservation;
 
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
