@@ -1,0 +1,144 @@
+{
+  "info": {
+    "_postman_id": "5a7e210f-ce31-4d97-ad8b-dd51503234a0",
+    "name": "Paytm Seat Reserve",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Show",
+      "id": "4b662823-5132-40f4-baac-7bccba167088",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Avengers: Secret Wars - Show 1\",\n  \"price_paise\": 25000,\n  \"seats\": [\n    \"01\",\n    \"02\",\n    \"03\",\n    \"04\",\n    \"05\",\n    \"06\",\n    \"07\",\n    \"08\",\n    \"09\",\n    \"10\",\n    \"11\",\n    \"12\",\n    \"13\",\n    \"14\",\n    \"15\",\n    \"16\",\n    \"17\",\n    \"18\",\n    \"19\",\n    \"20\"\n  ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "https://paytm-seat-reservation-production-e3a7.up.railway.app/shows",
+          "protocol": "https",
+          "host": [
+            "paytm-seat-reservation-production-e3a7",
+            "up",
+            "railway",
+            "app"
+          ],
+          "path": [
+            "shows"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "Shows/id",
+      "id": "6dacbc85-a242-49a9-be35-e2c6f5584661",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": ""
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "liveness",
+      "id": "cba6a4c3-2870-4a44-b8bd-6e5050c1e628",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": ""
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "health",
+      "id": "014746e2-a8c5-49a7-891d-4b23420e593c",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "https://paytm-seat-reservation-production-e3a7.up.railway.app/actuator/health",
+          "protocol": "https",
+          "host": [
+            "paytm-seat-reservation-production-e3a7",
+            "up",
+            "railway",
+            "app"
+          ],
+          "path": [
+            "actuator",
+            "health"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "reserve",
+      "id": "a2f35357-4462-4d72-93f8-a320d621503b",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"name\": \"Avengers: Secret Wars - Show 1\",\n    \"price_paise\": 25000,\n    \"seats\": [\n        \"01\",\n        \"02\"\n    ]\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "https://paytm-seat-reservation-production-e3a7.up.railway.app/shows/02886e8d-66f1-4cea-b75a-870e80fd9a79/reserve",
+          "protocol": "https",
+          "host": [
+            "paytm-seat-reservation-production-e3a7",
+            "up",
+            "railway",
+            "app"
+          ],
+          "path": [
+            "shows",
+            "02886e8d-66f1-4cea-b75a-870e80fd9a79",
+            "reserve"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "cancel",
+      "id": "e43cfcae-8bff-46a4-8d52-07d15c88343b",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "https://paytm-seat-reservation-production-e3a7.up.railway.app/shows/80424e69-02a2-464e-956a-94bc0de70559/cancel",
+          "protocol": "https",
+          "host": [
+            "paytm-seat-reservation-production-e3a7",
+            "up",
+            "railway",
+            "app"
+          ],
+          "path": [
+            "shows",
+            "80424e69-02a2-464e-956a-94bc0de70559",
+            "cancel"
+          ]
+        }
+      },
+      "response": []
+    }
+  ]
+}
