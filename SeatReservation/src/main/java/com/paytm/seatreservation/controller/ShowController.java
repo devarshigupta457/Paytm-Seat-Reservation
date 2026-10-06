@@ -41,7 +41,7 @@ public class ShowController {
         if (authHeader != null && authHeader.startsWith("Bearer ")) {
             userId = authHeader.substring(7);
         } else {
-            userId = "test-user-1"; // Local dev fallback
+            userId = "test-user-2"; // Local dev fallback
         }
 
         ReservationResponse response = reservationService.reserveSeats(showId, userId, idempotencyKey, request);

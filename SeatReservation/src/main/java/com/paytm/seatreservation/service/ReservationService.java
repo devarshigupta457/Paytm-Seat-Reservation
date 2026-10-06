@@ -22,11 +22,13 @@ public class ReservationService {
     private final ReservationRepository reservationRepository;
     private final IdempotencyKeyRepository idempotencyRepository;
     private final ObjectMapper objectMapper;
+    private final ReservationUserLockRepository reservationUserLockRepository;
 
     private final Counter confirmedCounter;
     private final Counter seatTakenCounter;
     private final Counter limitExceededCounter;
     private final Counter idempotencyMismatchCounter;
+    private final Counter idempotentReplayCounter;
 
     public ReservationService(
             ShowRepository showRepository,
@@ -34,64 +36,112 @@ public class ReservationService {
             ReservationRepository reservationRepository,
             IdempotencyKeyRepository idempotencyRepository,
             ObjectMapper objectMapper,
-            MeterRegistry registry) {
+            MeterRegistry registry,
+            ReservationUserLockRepository reservationUserLockRepository) {
+
         this.showRepository = showRepository;
         this.seatRepository = seatRepository;
         this.reservationRepository = reservationRepository;
         this.idempotencyRepository = idempotencyRepository;
         this.objectMapper = objectMapper;
+        this.reservationUserLockRepository =
+                reservationUserLockRepository;
 
-        this.confirmedCounter = registry.counter("reservations.confirmed");
-        this.seatTakenCounter = registry.counter("reservations.declined", "reason", "seat_taken");
-        this.limitExceededCounter = registry.counter("reservations.declined", "reason", "user_limit_exceeded");
-        this.idempotencyMismatchCounter = registry.counter("reservations.declined", "reason", "idempotency_mismatch");
+        this.confirmedCounter =
+                registry.counter("reservations.confirmed");
+
+        this.seatTakenCounter =
+                registry.counter(
+                        "reservations.declined",
+                        "reason",
+                        "seat_taken"
+                );
+
+        this.limitExceededCounter =
+                registry.counter(
+                        "reservations.declined",
+                        "reason",
+                        "user_limit_exceeded"
+                );
+
+        this.idempotencyMismatchCounter =
+                registry.counter(
+                        "reservations.declined",
+                        "reason",
+                        "idempotency_mismatch"
+                );
+
+        this.idempotentReplayCounter =
+                registry.counter(
+                        "reservations.declined",
+                        "reason",
+                        "idempotent_replay"
+                );
     }
 
+    // ============================================================
+    // CANCEL RESERVATION
+    // ============================================================
+
     @Transactional
-    public ReservationResponse cancelReservation(String reservationId, String userId) {
+    public ReservationResponse cancelReservation(
+            String reservationId,
+            String userId) {
 
         // 1. Find reservation
-        Reservation reservation = reservationRepository.findById(reservationId)
-                .orElseThrow(() ->
-                        new DomainConflictException(
-                                "Reservation not found: " + reservationId));
+        Reservation reservation =
+                reservationRepository.findById(reservationId)
+                        .orElseThrow(() ->
+                                new DomainConflictException(
+                                        "Reservation not found: "
+                                                + reservationId));
 
-        // 2. Only the owner can cancel
+        // 2. Only owner can cancel
         if (!reservation.getUserId().equals(userId)) {
+
             throw new ForbiddenException(
                     "Only the reservation owner may cancel this reservation");
         }
 
         // 3. Reservation must be CONFIRMED
         if (!"CONFIRMED".equals(reservation.getStatus())) {
+
             throw new DomainConflictException(
-                    "Reservation is already " + reservation.getStatus());
+                    "Reservation is already "
+                            + reservation.getStatus());
         }
 
-        // 4. Lock all seats belonging to this reservation
+        // 4. Lock all seats belonging to reservation
         List<Seat> lockedSeats =
-                seatRepository.findByReservationIdForUpdate(reservationId);
+                seatRepository.findByReservationIdForUpdate(
+                        reservationId);
 
-        // 5. Make sure reservation still owns seats
+        // 5. Make sure seats exist
         if (lockedSeats.isEmpty()) {
+
             throw new DomainConflictException(
                     "No seats are associated with reservation: "
                             + reservationId);
         }
 
-        // 6. Safety check
+        // 6. Safety validation
         for (Seat seat : lockedSeats) {
 
-            if (!reservationId.equals(seat.getReservationId())) {
+            if (!reservationId.equals(
+                    seat.getReservationId())) {
+
                 throw new DomainConflictException(
-                        "Seat " + seat.getSeatNumber()
+                        "Seat "
+                                + seat.getSeatNumber()
                                 + " is no longer associated with reservation "
                                 + reservationId);
             }
 
             if (!"CONFIRMED".equals(seat.getStatus())) {
+
                 throw new DomainConflictException(
-                        "Seat " + seat.getSeatNumber()
+                        "Seat "
+                                + seat.getSeatNumber()
                                 + " is not in CONFIRMED state");
             }
         }
@@ -101,7 +151,8 @@ public class ReservationService {
 
         for (Seat seat : lockedSeats) {
 
-            seatNumbers.add(seat.getSeatNumber());
+            seatNumbers.add(
+                    seat.getSeatNumber());
 
             seat.setStatus("AVAILABLE");
             seat.setReservationId(null);
@@ -109,12 +160,11 @@ public class ReservationService {
 
         seatRepository.saveAll(lockedSeats);
 
-        // 8. Mark reservation as CANCELLED
+        // 8. Cancel reservation
         reservation.setStatus("CANCELLED");
 
         reservationRepository.save(reservation);
 
-        // 9. Return response
         return new ReservationResponse(
                 reservation.getId(),
                 reservation.getShowId(),
@@ -125,85 +175,403 @@ public class ReservationService {
         );
     }
 
+
+    // ============================================================
+    // RESERVE SEATS
+    // ============================================================
+
     @Transactional
-    public ReservationResponse reserveSeats(String showId, String userId, String idempotencyKey, ReservationRequest request) {
-        // 1. Idempotency Check
-        String requestHash = DigestUtils.sha256Hex(request.getSeats().toString());
-        Optional<IdempotencyKey> existingKey = idempotencyRepository.findByIdempotencyKeyAndUserId(idempotencyKey, userId);
+    public ReservationResponse reserveSeats(
+            String showId,
+            String userId,
+            String idempotencyKey,
+            ReservationRequest request) {
 
-        if (existingKey.isPresent()) {
-            IdempotencyKey ik = existingKey.get();
-            if (!ik.getRequestHash().equals(requestHash)) {
-                idempotencyMismatchCounter.increment();
-                throw new DomainConflictException("Idempotency key reused with different payload");
-            }
-            try {
-                return objectMapper.readValue(ik.getResponseJson(), ReservationResponse.class);
-            } catch (Exception e) {
-                throw new RuntimeException("Error parsing cached response", e);
-            }
+        /*
+         * ========================================================
+         * VALIDATION
+         * ========================================================
+         */
+
+        if (idempotencyKey == null
+                || idempotencyKey.isBlank()) {
+
+            throw new DomainConflictException(
+                    "Idempotency-Key header is required");
         }
 
-        // 2. Fetch Show
-        Show show = showRepository.findById(showId)
-                .orElseThrow(() -> new DomainConflictException("Show not found: " + showId));
+        if (request == null
+                || request.getSeats() == null
+                || request.getSeats().isEmpty()) {
 
-        List<String> requestedSeats = request.getSeats();
-        int perUserLimit = 4;
-
-        // 3. User Limit Check
-        long existingCount = seatRepository.countByShowIdAndReservationUserId(showId, userId);
-        if (existingCount + requestedSeats.size() > perUserLimit) {
-            limitExceededCounter.increment();
-            throw new DomainConflictException("Exceeds maximum limit of " + perUserLimit + " seats per user");
+            throw new DomainConflictException(
+                    "At least one seat must be requested");
         }
 
-        // 4. Sort seat numbers lexicographically to eliminate deadlocks
-        List<String> sortedSeats = new ArrayList<>(requestedSeats);
+
+        /*
+         * ========================================================
+         * REQUEST HASH
+         * ========================================================
+         *
+         * Sort before hashing so the same logical request:
+         *
+         * [A1, A2]
+         *
+         * and
+         *
+         * [A2, A1]
+         *
+         * produce the same hash.
+         */
+
+        List<String> requestedSeats =
+                new ArrayList<>(request.getSeats());
+
+        List<String> sortedSeats =
+                new ArrayList<>(requestedSeats);
+
         Collections.sort(sortedSeats);
 
-        // Fetch & Acquire InnoDB Row Locks (FOR UPDATE)
-        List<Seat> lockedSeats = seatRepository.findByShowIdAndSeatNumberInOrderAsc(showId, sortedSeats);
+        String requestHash =
+                DigestUtils.sha256Hex(
+                        String.join(",", sortedSeats)
+                );
 
-        if (lockedSeats.size() != sortedSeats.size()) {
-            seatTakenCounter.increment();
-            throw new DomainConflictException("One or more requested seats do not exist");
-        }
 
-        for (Seat seat : lockedSeats) {
-            if (!"AVAILABLE".equals(seat.getStatus())) {
-                seatTakenCounter.increment();
-                throw new DomainConflictException("Seat " + seat.getSeatNumber() + " is already taken");
+        /*
+         * ========================================================
+         * USER LOCK
+         * ========================================================
+         *
+         * This MUST happen BEFORE:
+         *
+         * - idempotency check
+         * - per-user limit check
+         *
+         * Otherwise 10 parallel requests from the same user
+         * can all see the same old count.
+         */
+
+        acquireUserLock(showId, userId);
+
+
+        /*
+         * ========================================================
+         * IDEMPOTENCY CHECK
+         * ========================================================
+         *
+         * Because the user lock is already held, two concurrent
+         * requests from the same user cannot pass this check
+         * simultaneously.
+         */
+
+        Optional<IdempotencyKey> existingKey =
+                idempotencyRepository
+                        .findByIdempotencyKeyAndUserId(
+                                idempotencyKey,
+                                userId
+                        );
+
+        if (existingKey.isPresent()) {
+
+            IdempotencyKey ik =
+                    existingKey.get();
+
+            /*
+             * Same key + different seats = 409
+             */
+            if (!requestHash.equals(
+                    ik.getRequestHash())) {
+
+                idempotencyMismatchCounter.increment();
+
+                throw new DomainConflictException(
+                        "Idempotency key reused with different payload");
+            }
+
+            /*
+             * Same key + same request = return
+             * original response.
+             */
+
+            idempotentReplayCounter.increment();
+
+            try {
+
+                return objectMapper.readValue(
+                        ik.getResponseJson(),
+                        ReservationResponse.class
+                );
+
+            } catch (Exception e) {
+
+                throw new DomainConflictException(
+                        "Unable to restore idempotent reservation response");
             }
         }
 
-        // 5. Update state atomically
-        String reservationId = UUID.randomUUID().toString();
-        long totalAmount = show.getPricePaise() * sortedSeats.size();
+
+        /*
+         * ========================================================
+         * FETCH SHOW
+         * ========================================================
+         */
+
+        Show show =
+                showRepository.findById(showId)
+                        .orElseThrow(() ->
+                                new DomainConflictException(
+                                        "Show not found: "
+                                                + showId));
+
+
+        /*
+         * ========================================================
+         * REQUESTED SEATS VALIDATION
+         * ========================================================
+         */
+
+        if (sortedSeats.size()
+                != new HashSet<>(sortedSeats).size()) {
+
+            throw new DomainConflictException(
+                    "Duplicate seat requested");
+        }
+
+
+        /*
+         * ========================================================
+         * PER USER LIMIT
+         * ========================================================
+         *
+         * IMPORTANT:
+         *
+         * User lock was acquired BEFORE this query.
+         *
+         * Therefore parallel requests from the same user
+         * cannot all read the same old count.
+         */
+
+        int perUserLimit = 4;
+
+        long existingCount =
+                seatRepository
+                        .countByShowIdAndReservationUserId(
+                                showId,
+                                userId
+                        );
+
+        if (existingCount
+                + sortedSeats.size()
+                > perUserLimit) {
+
+            limitExceededCounter.increment();
+
+            throw new DomainConflictException(
+                    "Exceeds maximum limit of "
+                            + perUserLimit
+                            + " seats per user");
+        }
+
+
+        /*
+         * ========================================================
+         * LOCK SEATS
+         * ========================================================
+         *
+         * Seat numbers are sorted before locking.
+         *
+         * This deterministic order greatly reduces deadlocks
+         * when multiple requests reserve multiple seats.
+         */
+
+        List<Seat> lockedSeats =
+                seatRepository
+                        .findByShowIdAndSeatNumberInOrderAsc(
+                                showId,
+                                sortedSeats
+                        );
+
+
+        /*
+         * Seat doesn't exist.
+         */
+
+        if (lockedSeats.size()
+                != sortedSeats.size()) {
+
+            seatTakenCounter.increment();
+
+            throw new DomainConflictException(
+                    "One or more requested seats do not exist");
+        }
+
+
+        /*
+         * ========================================================
+         * CHECK SEAT STATE
+         * ========================================================
+         *
+         * These rows are already locked with FOR UPDATE.
+         *
+         * Therefore another transaction cannot change them
+         * until this transaction commits/rolls back.
+         */
 
         for (Seat seat : lockedSeats) {
-            seat.setStatus("CONFIRMED");
-            seat.setReservationId(reservationId);
+
+            if (!"AVAILABLE".equals(
+                    seat.getStatus())) {
+
+                seatTakenCounter.increment();
+
+                throw new DomainConflictException(
+                        "Seat "
+                                + seat.getSeatNumber()
+                                + " is already taken");
+            }
         }
+
+
+        /*
+         * ========================================================
+         * CREATE RESERVATION ID
+         * ========================================================
+         */
+
+        String reservationId =
+                UUID.randomUUID().toString();
+
+        long totalAmount =
+                show.getPricePaise()
+                        * sortedSeats.size();
+
+
+        /*
+         * ========================================================
+         * CLAIM SEATS
+         * ========================================================
+         *
+         * IMPORTANT:
+         *
+         * The seats are already locked with SELECT FOR UPDATE.
+         *
+         * Therefore only one transaction can pass the
+         * AVAILABLE check for a particular seat.
+         */
+
+        for (Seat seat : lockedSeats) {
+
+            seat.setStatus("CONFIRMED");
+
+            seat.setReservationId(
+                    reservationId
+            );
+        }
+
         seatRepository.saveAll(lockedSeats);
 
-        Reservation reservation = new Reservation(reservationId, showId, userId, totalAmount, "CONFIRMED");
+
+        /*
+         * ========================================================
+         * CREATE RESERVATION
+         * ========================================================
+         */
+
+        Reservation reservation =
+                new Reservation(
+                        reservationId,
+                        showId,
+                        userId,
+                        totalAmount,
+                        "CONFIRMED"
+                );
+
         reservationRepository.save(reservation);
 
-        ReservationResponse response = new ReservationResponse(
-                reservationId, showId, userId, requestedSeats, totalAmount, "confirmed"
-        );
 
-        // 6. Record Idempotency Key
+        /*
+         * ========================================================
+         * RESPONSE
+         * ========================================================
+         */
+
+        ReservationResponse response =
+                new ReservationResponse(
+                        reservationId,
+                        showId,
+                        userId,
+                        sortedSeats,
+                        totalAmount,
+                        "confirmed"
+                );
+
+
+        /*
+         * ========================================================
+         * SAVE IDEMPOTENCY RECORD
+         * ========================================================
+         */
+
         try {
-            String responseJson = objectMapper.writeValueAsString(response);
-            idempotencyRepository.save(new IdempotencyKey(idempotencyKey, userId, requestHash, reservationId, responseJson));
+
+            String responseJson =
+                    objectMapper.writeValueAsString(
+                            response
+                    );
+
+            idempotencyRepository.save(
+                    new IdempotencyKey(
+                            idempotencyKey,
+                            userId,
+                            requestHash,
+                            reservationId,
+                            responseJson
+                    )
+            );
+
         } catch (Exception e) {
-            throw new RuntimeException("Error serializing response", e);
+
+            throw new DomainConflictException(
+                    "Unable to save idempotency record");
         }
 
+
+        /*
+         * ========================================================
+         * METRIC
+         * ========================================================
+         */
+
         confirmedCounter.increment();
+
         return response;
     }
 
+
+    // ============================================================
+    // USER LOCK
+    // ============================================================
+
+    private void acquireUserLock(
+            String showId,
+            String userId) {
+
+        /*
+         * The repository must create the row if it doesn't exist
+         * and then SELECT it FOR UPDATE.
+         */
+        reservationUserLockRepository
+                .createIfNotExists(
+                        showId,
+                        userId
+                );
+
+        reservationUserLockRepository
+                .findLockForUpdate(
+                        showId,
+                        userId
+                );
+    }
 }
