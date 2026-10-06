@@ -46,3 +46,9 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
     response_json TEXT NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 ) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS reservation_user_locks (
+    show_id VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255) NOT NULL,
+    PRIMARY KEY (show_id, user_id)
+) ENGINE=InnoDB;
