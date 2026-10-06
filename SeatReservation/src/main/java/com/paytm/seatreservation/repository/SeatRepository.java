@@ -2,9 +2,7 @@ package com.paytm.seatreservation.repository;
 
 import com.paytm.seatreservation.model.Seat;
 import jakarta.persistence.LockModeType;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Lock;
-import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.jpa.repository.*;
 import org.springframework.data.repository.query.Param;
 import jakarta.persistence.LockModeType;
 import org.springframework.data.jpa.repository.Lock;
@@ -44,5 +42,19 @@ public interface SeatRepository extends JpaRepository<Seat, Long> {
         ORDER BY s.seatNumber ASC
         """)
     List<Seat> findByReservationIdForUpdate(
+            @Param("reservationId") String reservationId);
+
+    @Modifying
+    @Query("""
+    UPDATE Seat s
+       SET s.status = 'CONFIRMED',
+           s.reservationId = :reservationId
+     WHERE s.showId = :showId
+       AND s.seatNumber = :seatNumber
+       AND s.status = 'AVAILABLE'
+""")
+    int confirmSeat(
+            @Param("showId") String showId,
+            @Param("seatNumber") String seatNumber,
             @Param("reservationId") String reservationId);
 }
